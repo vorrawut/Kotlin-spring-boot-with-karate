@@ -1,0 +1,63 @@
+stages:
+  - build
+  - test
+  - deploy
+
+# Global variables
+variables:
+  GRADLE_OPTS: "-Dorg.gradle.daemon=false"
+  GRADLE_USER_HOME: "$CI_PROJECT_DIR/.gradle"  # Cache Gradle dependencies
+  KUBE_CONFIG: "$KUBE_CONFIG"  # Kubeconfig file for Kubernetes access
+  IMAGE_TAG: "$CI_REGISTRY_IMAGE:$CI_COMMIT_SHA"  # Unique image tag for the commit
+
+# Cache Gradle dependencies
+cache:
+  paths:
+    - .gradle/wrapper
+    - .gradle/caches
+
+# Step 1: Build the application and Docker image
+build:
+  stage: build
+  image: gradle:7.5-jdk11
+  services:
+    - docker:dind  # Enable Docker-in-Docker service for building images
+  script:
+    - gradle clean build  # Build the Kotlin app
+    - docker build -t $IMAGE_TAG .  # Build Docker image with the current commit tag
+    - docker login -u "$CI_REGISTRY_USER" -p "$CI_REGISTRY_PASSWORD" "$CI_REGISTRY"
+    - docker push $IMAGE_TAG  # Push Docker image to the registry
+  artifacts:
+    paths:
+      - build/libs/  # Store the built JAR/WAR file
+
+# Step 2: Run tests
+test:
+  stage: test
+  image: gradle:7.5-jdk11
+  script:
+    - gradle test
+  artifacts:
+    paths:
+      - build/reports/tests/test/
+    reports:
+      junit: build/test-results/test/
+
+# Step 3: Deploy to Kubernetes
+deploy:
+  stage: deploy
+  image: lachlanevenson/k8s-kubectl:latest  # kubectl image for interacting with Kubernetes
+  before_script:
+    # Configure kubectl with the KUBE_CONFIG variable from GitLab CI/CD secrets
+    - mkdir -p ~/.kube
+    - echo "$KUBE_CONFIG" | base64 --decode > ~/.kube/config
+  script:
+    # Update the Kubernetes deployment with the new Docker image
+    - kubectl set image deployment/my-app-deployment my-app-container=$IMAGE_TAG
+    # Optionally, apply the full deployment YAML if needed
+    # - kubectl apply -f kubernetes/deployment.yaml
+  environment:
+    name: production
+    url: http://your-production-url.com
+  only:
+    - master
